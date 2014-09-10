@@ -340,6 +340,8 @@ class EthernetNetworkFactory {
                     // the dhcp client stays running, but if the renewal fails,
                     // we will lose our IP address and connectivity without
                     // noticing.
+                    NetworkUtils.resetConnections(mIface, NetworkUtils.RESET_ALL_ADDRESSES);
+                    NetworkUtils.stopDhcp(mIface);
                     if (!NetworkUtils.runDhcp(mIface, dhcpResults)) {
                         Log.e(TAG, "DHCP request error:" + NetworkUtils.getDhcpError());
                         // set our score lower than any network could go
