@@ -192,7 +192,7 @@ class EthernetNetworkFactory {
                     mNMService.setInterfaceDown(iface);
                 }
             }
-        } catch (RemoteException e) {
+        } catch (Exception e) {
             Log.e(TAG, "Error upping interface " + mIface + ": " + e);
         }
     }
