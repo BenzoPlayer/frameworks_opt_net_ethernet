@@ -32,6 +32,7 @@ import android.net.NetworkFactory;
 import android.net.NetworkInfo;
 import android.net.NetworkInfo.DetailedState;
 import android.net.NetworkUtils;
+import android.net.RouteInfo;
 import android.net.StaticIpConfiguration;
 import android.os.Handler;
 import android.os.IBinder;
@@ -45,9 +46,11 @@ import android.util.Log;
 
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.server.net.BaseNetworkObserver;
+import com.android.server.net.NetlinkTracker;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
+import java.net.InetAddress;
 
 
 /**
@@ -75,6 +78,9 @@ class EthernetNetworkFactory {
 
     /** Tracks interface changes. Called from NetworkManagementService. */
     private InterfaceObserver mInterfaceObserver;
+
+    /** Tracks updates via netlink */
+    private NetlinkTracker mNetlinkTracker;
 
     /** For static IP configuration */
     private EthernetManager mEthernetManager;
@@ -191,6 +197,54 @@ class EthernetNetworkFactory {
         }
     }
 
+    // Update the link properties to network agent.
+    // Agent will inturn update them to ConnectivityManager.
+    private void updateLinkProperties() {
+        // get the new linkproperties from NetlinkTracker
+        LinkProperties netlinkLp = mNetlinkTracker.getLinkProperties();
+        // update netlink properties to current link properties
+        mLinkProperties.setLinkAddresses(netlinkLp.getLinkAddresses());
+        for (RouteInfo route : netlinkLp.getRoutes()) {
+            mLinkProperties.addRoute(route);
+        }
+        for (InetAddress dns : netlinkLp.getDnsServers()) {
+            mLinkProperties.addDnsServer(dns);
+        }
+        if (DBG)
+            Log.d(TAG, "Link Properties = " + mLinkProperties);
+
+        if (mNetworkAgent != null)
+            mNetworkAgent.sendLinkProperties(mLinkProperties);
+    }
+
+    // Register netlink tracker to NetworkManagementService.
+    private boolean registerNetlinkTracker(String iface) {
+        // Ethernet NetworkFactory changes the interface on runtime.
+        // Unregister current netlink tracker and register new one.
+        if (mNetlinkTracker != null) {
+            try {
+                mNMService.unregisterObserver(mNetlinkTracker);
+            } catch (RemoteException e) {
+                Log.e(TAG, "Couldn't register netlink tracker: " + e.toString());
+                return false;
+            }
+        }
+        mNetlinkTracker = new NetlinkTracker(iface, new NetlinkTracker.Callback() {
+            public void update() {
+                updateLinkProperties();
+            }
+        });
+
+        try {
+            mNMService.registerObserver(mNetlinkTracker);
+        } catch (RemoteException e) {
+            Log.e(TAG, "Couldn't register netlink tracker: " + e.toString());
+            return false;
+        }
+
+        return true;
+    }
+
     private boolean maybeTrackInterface(String iface) {
         // If we don't already have an interface, and if this interface matches
         // our regex, start tracking it.
@@ -198,8 +252,12 @@ class EthernetNetworkFactory {
             return false;
 
         Log.d(TAG, "Started tracking interface " + iface);
-        setInterfaceUp(iface);
-        return true;
+        //before setting interface up, register netlink tracker
+        if (registerNetlinkTracker(iface)) {
+            setInterfaceUp(iface);
+            return true;
+        }
+        return false;
     }
 
     private void stopTrackingInterface(String iface) {
@@ -324,6 +382,8 @@ class EthernetNetworkFactory {
                                     NetworkUtils.stopDhcp(mIface);
 
                                     mLinkProperties.clear();
+                                    if (mNetlinkTracker != null)
+                                        mNetlinkTracker.clearLinkProperties();
                                     mNetworkInfo.setDetailedState(DetailedState.DISCONNECTED, null,
                                             mHwAddr);
                                     updateAgent();
